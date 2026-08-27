@@ -3,15 +3,10 @@ bun = "latest"
 go = "1.27"
 
 [tasks.init]
-description = "非交互式安装 opencode CLI 与 oh-my-opencode-slim 插件"
-# 关键 flag(全部非交互):
-#   --no-tui                       禁用交互式 TUI
-#   --preset=opencode-go           直接生成 opencode-go 预设
-#   --skills=yes                   安装内置 skills
-#   --companion=no                 跳过桌面 Companion 提示(CI / devcontainer 环境无桌面)
-#   --background-subagents=yes     跳过后台子代理提示(开发环境需要)
-#   --reset                        幂等:已存在配置时强制覆盖,避免误判"已装"
-# 幂等门控:opencode 命令存在且 plugin cache 已有 omo-slim 标记时直接退出
+description = "非交互式安装 opencode CLI(devcontainer 创建期自动运行,纯 curl,无 TUI 依赖)"
+# 关键点:
+#   - 仅安装 opencode CLI,纯 curl 管道,不读 stdin / TTY
+#   - 幂等:已存在时打印版本并直接退出
 # 注意:下方用 TOML literal multi-line string ('''),所有 $ / \ 原样传给 bash,
 #       不要改成 """ """(会触发 TOML 转义解析,把 \$HOME 变成 \$HOME 字面量)。
 run = '''
@@ -24,6 +19,24 @@ if ! command -v opencode >/dev/null 2>&1; then
 else
   echo "    opencode 已就绪: $(opencode --version 2>/dev/null || echo 'unknown')"
 fi
+'''
+
+[tasks.install-omo]
+description = "手动安装 oh-my-opencode-slim 插件(需 TTY,请在容器 shell 里手动执行: mise run install-omo)"
+# 注意: amo-slim 的 install 子命令内部仍可能要求 TTY,
+#       devcontainer 的 postCreateCommand 没有 TTY,会卡死,所以拆出来手动跑。
+# 关键 flag(全部非交互):
+#   --no-tui                       禁用交互式 TUI
+#   --preset=opencode-go           直接生成 opencode-go 预设
+#   --skills=yes                   安装内置 skills
+#   --companion=no                 跳过桌面 Companion 提示(CI / devcontainer 环境无桌面)
+#   --background-subagents=yes     跳过后台子代理提示(开发环境需要)
+#   --reset                        幂等:已存在配置时强制覆盖,避免误判"已装"
+# 幂等门控:opencode 命令存在且 plugin cache 已有 amo-slim 标记时直接退出
+# 注意:下方用 TOML literal multi-line string ('''),所有 $ / \ 原样传给 bash,
+#       不要改成 """ """(会触发 TOML 转义解析,把 \$HOME 变成 \$HOME 字面量)。
+run = '''
+set -e
 
 echo "==> 检查 oh-my-opencode-slim 是否已注册"
 ALREADY_INSTALLED=0
