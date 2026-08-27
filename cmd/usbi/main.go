@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,7 +132,16 @@ func main() {
 	if *portFlag != "" {
 		dev, ok := findDevice(filtered, *portFlag)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "usbi: no unique device matches location %q\n", *portFlag)
+			fmt.Fprintf(os.Stderr, "usbi: no unique device matches %q\n\nAvailable devices:\n", *portFlag)
+			for i, d := range filtered {
+				fmt.Fprintf(os.Stderr, "  %d. %s", i+1, coalesce(d.Name, "unnamed"))
+				if d.LocationID != "" {
+					fmt.Fprintf(os.Stderr, " [%s]", d.LocationID)
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+			fmt.Fprintln(os.Stderr, "\nPass the 1-based # shown by `usbi` (default view), the device name,")
+			fmt.Fprintln(os.Stderr, "or the full location id.")
 			os.Exit(1)
 		}
 		if err := render.RenderCard(os.Stdout, dev, meta, opts); err != nil {
@@ -147,48 +157,95 @@ func main() {
 	}
 }
 
-// findDevice matches by LocationID exact (case-insensitive), then by prefix if
-// exactly one prefix match exists.
-func findDevice(devs []usbi.USBDevice, loc string) (usbi.USBDevice, bool) {
-	want := strings.ToLower(loc)
-	var exact usbi.USBDevice
-	exactOK := false
-	for _, d := range devs {
-		got := strings.ToLower(d.LocationID)
-		if got == want {
-			if exactOK {
-				return usbi.USBDevice{}, false
-			}
-			exact = d
-			exactOK = true
-		}
-	}
-	if exactOK {
-		return exact, true
+// findDevice matches the user-supplied selector against the filtered device
+// list.  The accepted forms are, in order:
+//
+//  1. A 1-based numeric index (matches the row number shown in `usbi`'s
+//     default view).  This is the most robust form because it works for
+//     devices without a LocationID, e.g. macOS top-level buses.
+//  2. An exact, case-insensitive LocationID.
+//  3. A case-insensitive LocationID prefix, if exactly one device matches.
+//  4. A case-insensitive Name prefix, if exactly one device matches.  This
+//     lets users type `--port "USB 3.1 Bus"` against macOS output where
+//     system_profiler often reports an empty LocationID.
+//
+// findDevice returns ok=false whenever the selector is ambiguous or matches
+// no device.
+func findDevice(devs []usbi.USBDevice, sel string) (usbi.USBDevice, bool) {
+	want := strings.ToLower(strings.TrimSpace(sel))
+	if want == "" {
+		return usbi.USBDevice{}, false
 	}
 
-	var prefix usbi.USBDevice
-	prefixOK := false
-	for _, d := range devs {
-		got := strings.ToLower(d.LocationID)
-		if strings.HasPrefix(got, want) {
-			if prefixOK {
-				return usbi.USBDevice{}, false
-			}
-			prefix = d
-			prefixOK = true
+	// (1) Numeric 1-based index from the rendered overview.
+	if n, err := strconv.Atoi(want); err == nil {
+		if n >= 1 && n <= len(devs) {
+			return devs[n-1], true
 		}
+		return usbi.USBDevice{}, false
 	}
-	if prefixOK {
-		return prefix, true
+
+	// (2) Exact LocationID (case-insensitive).
+	if pick, ok := uniqueMatch(devs, want, func(d usbi.USBDevice) string { return d.LocationID }, true); ok {
+		return pick, true
 	}
+	// (3) Unique LocationID prefix.
+	if pick, ok := uniqueMatch(devs, want, func(d usbi.USBDevice) string { return d.LocationID }, false); ok {
+		return pick, true
+	}
+	// (4) Unique Name prefix — macOS top-level buses / E-marker cable etc.
+	if pick, ok := uniqueMatch(devs, want, func(d usbi.USBDevice) string { return d.Name }, false); ok {
+		return pick, true
+	}
+
 	return usbi.USBDevice{}, false
+}
+
+// uniqueMatch returns the single device whose field (extracted by fieldOf)
+// equals want (case-insensitive) when exact is true, or has want as a
+// case-insensitive prefix when exact is false.  ok is false for zero or
+// multiple matches.
+func uniqueMatch(devs []usbi.USBDevice, want string, fieldOf func(usbi.USBDevice) string, exact bool) (usbi.USBDevice, bool) {
+	var pick usbi.USBDevice
+	ok := false
+	for _, d := range devs {
+		got := strings.ToLower(fieldOf(d))
+		if got == "" {
+			continue
+		}
+		var match bool
+		if exact {
+			match = got == want
+		} else {
+			match = strings.HasPrefix(got, want)
+		}
+		if !match {
+			continue
+		}
+		if ok {
+			return usbi.USBDevice{}, false
+		}
+		pick = d
+		ok = true
+	}
+	return pick, ok
+}
+
+// coalesce returns a if non-empty, otherwise b.
+func coalesce(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func usage(w io.Writer) {
 	fmt.Fprintf(w, "usbi — cross-platform USB & Type-C device information\n\n")
 	fmt.Fprintf(w, "Usage: %s [flags]\n\nFlags:\n", os.Args[0])
-	fmt.Fprintf(w, "  -p, --port <location>   show a single device as a neofetch-style card\n")
+	fmt.Fprintf(w, "  -p, --port <selector>   show a single device as a neofetch-style card.\n")
+	fmt.Fprintf(w, "                          selector = the 1-based # shown in the default view,\n")
+	fmt.Fprintf(w, "                          a device-name prefix (case-insensitive),\n")
+	fmt.Fprintf(w, "                          or a location-id prefix (case-insensitive).\n")
 	fmt.Fprintf(w, "      --all               show the overview of all devices (default)\n")
 	fmt.Fprintf(w, "      --no-color          disable color output\n")
 	fmt.Fprintf(w, "      --json              emit JSON array of USBDevice\n")

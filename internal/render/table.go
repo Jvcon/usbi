@@ -21,6 +21,10 @@ func renderTable(w io.Writer, devs []usbi.USBDevice, meta Meta) error {
 
 	maxName := len("Name")
 	maxLoc := len("Location")
+	idxWidth := len(fmt.Sprintf("%d", len(devs)))
+	if idxWidth < 2 {
+		idxWidth = 2
+	}
 	for _, d := range devs {
 		if l := len(d.Name); l > maxName {
 			maxName = l
@@ -32,13 +36,15 @@ func renderTable(w io.Writer, devs []usbi.USBDevice, meta Meta) error {
 	maxName = min(maxName, 48)
 	maxLoc = min(maxLoc, 32)
 
-	header := fmt.Sprintf("%-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s",
-		maxName, "Name", maxLoc, "Location", "VID", "PID", "Speed", "Power",
+	idxFmt := "%" + fmt.Sprintf("%d", idxWidth) + "s"
+	header := fmt.Sprintf(idxFmt+"  %-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s",
+		"#", maxName, "Name", maxLoc, "Location", "VID", "PID", "Speed", "Power",
 		"Type-C / Cable")
 	fmt.Fprintln(w, header)
 	fmt.Fprintln(w, strings.Repeat("-", len(header)))
 
-	for _, d := range devs {
+	idxNumFmt := "%" + fmt.Sprintf("%d", idxWidth) + "d"
+	for i, d := range devs {
 		name := trunc(d.Name, maxName)
 		loc := trunc(d.LocationID, maxLoc)
 
@@ -61,8 +67,8 @@ func renderTable(w io.Writer, devs []usbi.USBDevice, meta Meta) error {
 
 		extra := formatTypeC(d)
 
-		fmt.Fprintf(w, "%-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s\n",
-			maxName, name, maxLoc, loc, vid, pid, speed, power, extra)
+		fmt.Fprintf(w, idxNumFmt+"  %-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s\n",
+			i+1, maxName, name, maxLoc, loc, vid, pid, speed, power, extra)
 	}
 	return nil
 }

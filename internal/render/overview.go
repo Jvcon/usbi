@@ -48,12 +48,21 @@ func renderPortGrid(devs []usbi.USBDevice, theme *Theme) string {
 		maxGlyphWidth = 6
 	}
 
+	// 1-based row index so users know what to pass to `--port <n>`.
+	// Width is the number of digits in the largest index.
+	idxWidth := len(fmt.Sprintf("%d", len(devs)))
+	if idxWidth < 2 {
+		idxWidth = 2
+	}
+	idxFmt := fmt.Sprintf("%%%dd", idxWidth)
+
 	rows := make([]string, 0, len(devs))
-	for _, d := range devs {
+	for i, d := range devs {
 		tier := usbTier(d)
 		glyph := theme.TierStyle(tier).Render(InlineGlyph(tier))
 		glyph = lipgloss.Place(maxGlyphWidth, 1, lipgloss.Left, lipgloss.Center, glyph)
 
+		idx := theme.Muted.Render(fmt.Sprintf(idxFmt, i+1))
 		loc := theme.Value.Render(coalesce(d.LocationID, "-"))
 		name := theme.Value.Render(trunc(coalesce(d.Name, "unnamed"), 38))
 		speed := theme.Muted.Render(coalesce(d.Speed, "-"))
@@ -64,6 +73,8 @@ func renderPortGrid(devs []usbi.USBDevice, theme *Theme) string {
 		}
 
 		row := lipgloss.JoinHorizontal(lipgloss.Center,
+			idx,
+			"  ",
 			glyph,
 			"  ",
 			loc,
