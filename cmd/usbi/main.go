@@ -22,8 +22,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"usbi"
+	"usbi/internal/render"
 )
 
 // backendFactory returns the platform-specific USBBackend.  Each platform
@@ -38,11 +40,22 @@ var (
 	filterHub   = flag.Bool("include-hubs", true, "include USB hubs in the output")
 	filterTC    = flag.Bool("include-typec", true, "include Type-C port records in the output")
 	showVersion = flag.Bool("version", false, "print version and exit")
+	portFlag    = flag.String("port", "", "show a single device as a neofetch-style card (also -p)")
+	allFlag     = flag.Bool("all", true, "show the overview of all devices (default)")
+	noColorFlag = flag.Bool("no-color", false, "disable color output")
 )
 
 func main() {
+	flag.StringVar(portFlag, "p", "", "alias for -port")
 	flag.Usage = func() { usage(os.Stderr) }
 	flag.Parse()
+
+	// Honor --no-color and the NO_COLOR env var. Setting the env var ensures
+	// lipgloss's color layer also skips coloring before any style is rendered.
+	if *noColorFlag || os.Getenv("NO_COLOR") != "" {
+		os.Setenv("NO_COLOR", "1")
+		*noColorFlag = true
+	}
 
 	if *showVersion {
 		fmt.Printf("usbi %s/%s\n", runtime.GOOS, runtime.GOARCH)
@@ -104,14 +117,85 @@ func main() {
 		return
 	}
 
-	printHuman(os.Stdout, filtered, name)
+	meta := render.Meta{
+		HostOS:      runtime.GOOS,
+		HostArch:    runtime.GOARCH,
+		BackendName: name,
+		Now:         time.Now(),
+	}
+	opts := render.Options{
+		NoColor: *noColorFlag,
+		Stdout:  os.Stdout,
+	}
+
+	if *portFlag != "" {
+		dev, ok := findDevice(filtered, *portFlag)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "usbi: no unique device matches location %q\n", *portFlag)
+			os.Exit(1)
+		}
+		if err := render.RenderCard(os.Stdout, dev, meta, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "usbi: render card: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := render.RenderOverview(os.Stdout, filtered, meta, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "usbi: render overview: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// findDevice matches by LocationID exact (case-insensitive), then by prefix if
+// exactly one prefix match exists.
+func findDevice(devs []usbi.USBDevice, loc string) (usbi.USBDevice, bool) {
+	want := strings.ToLower(loc)
+	var exact usbi.USBDevice
+	exactOK := false
+	for _, d := range devs {
+		got := strings.ToLower(d.LocationID)
+		if got == want {
+			if exactOK {
+				return usbi.USBDevice{}, false
+			}
+			exact = d
+			exactOK = true
+		}
+	}
+	if exactOK {
+		return exact, true
+	}
+
+	var prefix usbi.USBDevice
+	prefixOK := false
+	for _, d := range devs {
+		got := strings.ToLower(d.LocationID)
+		if strings.HasPrefix(got, want) {
+			if prefixOK {
+				return usbi.USBDevice{}, false
+			}
+			prefix = d
+			prefixOK = true
+		}
+	}
+	if prefixOK {
+		return prefix, true
+	}
+	return usbi.USBDevice{}, false
 }
 
 func usage(w io.Writer) {
 	fmt.Fprintf(w, "usbi — cross-platform USB & Type-C device information\n\n")
 	fmt.Fprintf(w, "Usage: %s [flags]\n\nFlags:\n", os.Args[0])
-	flag.CommandLine.SetOutput(w)
-	flag.PrintDefaults()
+	fmt.Fprintf(w, "  -p, --port <location>   show a single device as a neofetch-style card\n")
+	fmt.Fprintf(w, "      --all               show the overview of all devices (default)\n")
+	fmt.Fprintf(w, "      --no-color          disable color output\n")
+	fmt.Fprintf(w, "      --json              emit JSON array of USBDevice\n")
+	fmt.Fprintf(w, "      --indent            pretty-print JSON output\n")
+	fmt.Fprintf(w, "      --include-hubs      include USB hubs in the output (default true)\n")
+	fmt.Fprintf(w, "      --include-typec     include Type-C port records in the output (default true)\n")
+	fmt.Fprintf(w, "      --version           print version and exit\n")
 }
 
 // pickBackend selects the platform backend.  The concrete backend type is
@@ -125,116 +209,4 @@ func pickBackend() (backendFactory, string) {
 	return func() (usbi.USBBackend, string) { return backend, name }, name
 }
 
-func printHuman(w io.Writer, devs []usbi.USBDevice, backendName string) {
-	fmt.Fprintf(w, "Backend: %s\n", backendName)
-	fmt.Fprintf(w, "Devices: %d\n\n", len(devs))
 
-	if len(devs) == 0 {
-		fmt.Fprintln(w, "(no devices)")
-		return
-	}
-
-	// Wide first pass to size columns.
-	maxName := len("Name")
-	maxLoc := len("Location")
-	for _, d := range devs {
-		if l := len(d.Name); l > maxName {
-			maxName = l
-		}
-		if l := len(d.LocationID); l > maxLoc {
-			maxLoc = l
-		}
-	}
-	maxName = min(maxName, 48)
-	maxLoc = min(maxLoc, 32)
-
-	header := fmt.Sprintf("%-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s",
-		maxName, "Name", maxLoc, "Location", "VID", "PID", "Speed", "Power",
-		"Type-C / Cable")
-	fmt.Fprintln(w, header)
-	fmt.Fprintln(w, strings.Repeat("-", len(header)))
-
-	for _, d := range devs {
-		name := trunc(d.Name, maxName)
-		loc := trunc(d.LocationID, maxLoc)
-
-		vid := d.VendorID
-		if vid == "" {
-			vid = "-"
-		}
-		pid := d.ProductID
-		if pid == "" {
-			pid = "-"
-		}
-		speed := d.Speed
-		if speed == "" {
-			speed = "-"
-		}
-		power := "-"
-		if d.NegotiatedCurrent > 0 {
-			power = fmt.Sprintf("%d mA", d.NegotiatedCurrent)
-		}
-
-		extra := formatTypeC(d)
-
-		fmt.Fprintf(w, "%-*s  %-*s  %-9s  %-9s  %-9s  %-9s  %s\n",
-			maxName, name, maxLoc, loc, vid, pid, speed, power, extra)
-	}
-}
-
-func formatTypeC(d usbi.USBDevice) string {
-	parts := []string{}
-	if d.PortConnectorType != "" {
-		parts = append(parts, "port="+d.PortConnectorType)
-	}
-	if d.PowerOpMode != "" {
-		parts = append(parts, "mode="+d.PowerOpMode)
-	}
-	if d.CableType != "" {
-		parts = append(parts, "cable="+d.CableType)
-	}
-	if d.CableMaxSpeed != "" {
-		parts = append(parts, "speed="+d.CableMaxSpeed)
-	}
-	if d.CableCurrent != "" {
-		parts = append(parts, "I="+d.CableCurrent)
-	}
-	if d.CableUSB4 {
-		parts = append(parts, "USB4")
-	}
-	if d.CableTBT3 {
-		parts = append(parts, "TBT3")
-	}
-	if len(d.Altmodes) > 0 {
-		alts := []string{}
-		for _, a := range d.Altmodes {
-			t := a.SVID
-			if a.Description != "" {
-				t = a.Description
-			}
-			alts = append(alts, t)
-		}
-		parts = append(parts, "alt=["+strings.Join(alts, ",")+"]")
-	}
-	if len(d.Unavailable) > 0 {
-		parts = append(parts, "n/a="+strings.Join(d.Unavailable, ","))
-	}
-	return strings.Join(parts, " ")
-}
-
-func trunc(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n <= 1 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
