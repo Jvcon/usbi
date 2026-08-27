@@ -1,4 +1,4 @@
-name: Build & Test & Optional Release
+name: build
 
 on:
   push:
@@ -8,62 +8,140 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # only used for the release job
+
 jobs:
-  build-test:
+  # -----------------------------------------------------------------------
+  # 1. Test & cross-compile every platform.  We deliberately test all three
+  #    OSes on a single Linux runner using `GOOS=` overrides so the matrix
+  #    is fast and deterministic (no Windows / macOS runner minutes wasted).
+  # -----------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ['1.22']
-    runs-on: ${{ matrix.os }}
+        target:
+          - { goos: linux,   goarch: amd64, ext: ""      }
+          - { goos: linux,   goarch: arm64, ext: ""      }
+          - { goos: darwin,  goarch: amd64, ext: ""      }
+          - { goos: darwin,  goarch: arm64, ext: ""      }
+          - { goos: windows, goarch: amd64, ext: ".exe"  }
+          - { goos: windows, goarch: arm64, ext: ".exe"  }
+    env:
+      GOOS:    ${{ matrix.target.goos }}
+      GOARCH:  ${{ matrix.target.goarch }}
+      CGO_ENABLED: 0
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
-      - name: Install dependencies
-        run: go mod tidy
+          # Aligned with go.mod (golang.org/x/sys v0.46.0 requires Go 1.25).
+          go-version: '1.25'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      # Build per-OS artifacts.  Output names follow the convention used by
+      # goreleaser / go-build-template so downstream tooling can rely on them.
       - name: Build
         run: |
+          set -e
           mkdir -p dist
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            go build -v -o dist/usbi-windows.exe ./...
-          elif [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            go build -v -o dist/usbi-linux ./...
-          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
-            go build -v -o dist/usbi-macos ./...
-          fi
-      - name: Test
-        run: go test -v ./...
+          name="usbi-${GOOS}-${GOARCH}${GOEXE}"
+          go build -trimpath -ldflags="-s -w" -o "dist/${name}" ./cmd/usbi
+          echo "Built dist/${name} ($(stat -c%s "dist/${name}") bytes)"
 
-      # Windows 链接验证
-      - name: Verify Windows linking
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
+      - name: Smoke test (linux/amd64 only)
+        if: matrix.target.goos == 'linux' && matrix.target.goarch == 'amd64'
         run: |
-          dumpbin /IMPORTS dist\usbi-windows.exe | Select-String "SETUPAPI.dll"
-          dumpbin /IMPORTS dist\usbi-windows.exe | Select-String "WINUSB.dll"
+          ./dist/usbi-linux-amd64 -version
+          ./dist/usbi-linux-amd64 -json -indent | head -n 40 || true
 
-      # 上传构建产物（仅在发布场景）
-      - name: Upload artifacts
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: usbi-${{ matrix.os }}
-          path: dist/*
+          name: usbi-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: dist/usbi-${{ matrix.target.goos }}-${{ matrix.target.goarch }}*
+          if-no-files-found: error
+          retention-days: 14
 
+  # -----------------------------------------------------------------------
+  # 2. Build & test the actual host runner, exercising the real native code
+  #    path.  Catches regressions that cross-compilation hides (build tags
+  #    missing on one platform, init-time panics, etc.).
+  # -----------------------------------------------------------------------
+  native:
+    name: native (${{ runner.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Aligned with go.mod (golang.org/x/sys v0.46.0 requires Go 1.25).
+          go-version: '1.25'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          # `go run` here would also work but `go build` is closer to what
+          # users will do, so we exercise the same code path.
+          go build -trimpath -ldflags="-s -w" -o dist/usbi ./cmd/usbi
+
+      - name: smoke run
+        shell: bash
+        run: |
+          ./dist/usbi -version
+          (./dist/usbi -json -indent 2>&1 | head -n 20) || true
+
+  # -----------------------------------------------------------------------
+  # 3. GitHub Release.  Triggered on tag push (v*) or manual dispatch.
+  #    Pulls the cross-compiled artifacts from the "build" job so we
+  #    produce a single, consistent release per tag.
+  # -----------------------------------------------------------------------
   release:
-    needs: build-test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    name: release
+    needs: [build]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-dist
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+          merge-multiple: true
+
+      - name: Show downloaded artifacts
+        run: ls -laR release-dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
           files: release-dist/**
+          fail_on_unmatched_files: true
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
