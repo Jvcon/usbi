@@ -1,0 +1,30 @@
+{
+	"name": "Go Development Environment",
+	"image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features":{
+    "ghcr.io/roul/devcontainer-features/mise-golang:1": {
+      "version": "1.27"
+    }
+  },
+	"customizations": {
+		"vscode": {
+			// 自动安装开发所需的 VS Code 插件
+			"extensions": [
+				"golang.go",              // Go 语言官方核心插件
+				"tyriar.sort-lines",      // 代码排序辅助（可选）
+				"usernamehw.errorlens"    // 错误行内直接高亮提示（强烈推荐）
+			],
+			// 容器内 VS Code 的专属专属配置
+			"settings": {
+				"go.toolsManagement.checkForUpdates": "local",
+				"gopls": {
+					"ui.completion.usePlaceholders": true, // 补全函数时自动带入参数占位符
+					"formatting.gofumpt": true            // 使用更严格的 gofumpt 格式化代码
+				},
+				"editor.formatOnSave": true               // 保存文件时自动格式化代码
+			}
+		}
+	},
+	"postCreateCommand": "go version",
+	"remoteUser": "vscode"
+}
