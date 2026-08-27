@@ -3,10 +3,53 @@ bun = "latest"
 go = "1.27"
 
 [tasks.init]
-description = "初始化开发环境依赖"
-# 这里可以编写需要安装的依赖，mise 会在执行此任务前自动安装上面 [tools] 中的工具
-run = """
-echo "开始安装项目特定依赖..."
-curl -fsSL https://opencode.ai/install
-bunx oh-my-opencode-slim@latest install --preset=opencode-go
-"""
+description = "非交互式安装 opencode CLI 与 oh-my-opencode-slim 插件"
+# 关键 flag(全部非交互):
+#   --no-tui                       禁用交互式 TUI
+#   --preset=opencode-go           直接生成 opencode-go 预设
+#   --skills=yes                   安装内置 skills
+#   --companion=no                 跳过桌面 Companion 提示(CI / devcontainer 环境无桌面)
+#   --background-subagents=yes     跳过后台子代理提示(开发环境需要)
+#   --reset                        幂等:已存在配置时强制覆盖,避免误判"已装"
+# 幂等门控:opencode 命令存在且 plugin cache 已有 omo-slim 标记时直接退出
+# 注意:下方用 TOML literal multi-line string ('''),所有 $ / \ 原样传给 bash,
+#       不要改成 """ """(会触发 TOML 转义解析,把 \$HOME 变成 \$HOME 字面量)。
+run = '''
+set -e
+
+echo "==> 检查 opencode CLI 是否已安装"
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "    未找到 opencode,通过 https://opencode.ai/install 安装"
+  curl -fsSL https://opencode.ai/install | bash
+else
+  echo "    opencode 已就绪: $(opencode --version 2>/dev/null || echo 'unknown')"
+fi
+
+echo "==> 检查 oh-my-opencode-slim 是否已注册"
+ALREADY_INSTALLED=0
+if [ -f "$HOME/.config/opencode/oh-my-opencode-slim.json" ] \
+   || [ -f "$HOME/.config/opencode/oh-my-opencode-slim.jsonc" ]; then
+  if grep -q '"preset"' "$HOME/.config/opencode/oh-my-opencode-slim.json"* 2>/dev/null; then
+    ALREADY_INSTALLED=1
+  fi
+fi
+
+if [ "$ALREADY_INSTALLED" = "1" ] && [ -z "${USBI_FORCE_INIT:-}" ]; then
+  echo "    已检测到 oh-my-opencode-slim 配置,跳过安装(设 USBI_FORCE_INIT=1 强制重装)"
+  exit 0
+fi
+
+echo "==> 安装 oh-my-opencode-slim (opencode-go preset, 非交互模式)"
+bunx oh-my-opencode-slim@latest install \
+  --no-tui \
+  --preset=opencode-go \
+  --skills=yes \
+  --companion=no \
+  --background-subagents=yes \
+  --reset
+
+echo "==> 完成。下一步:"
+echo "    1. opencode auth login"
+echo "    2. opencode models --refresh"
+echo "    3. opencode"
+'''
