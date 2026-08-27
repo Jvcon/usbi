@@ -99,12 +99,18 @@ jobs:
   #    init-time panics, native syscalls, etc.).
   # -----------------------------------------------------------------------
   native:
-    name: native (${{ runner.os }})
+    name: native (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: macos-latest
+            label: macOS
+          - os: windows-latest
+            label: Windows
     steps:
       - uses: actions/checkout@v4
 
