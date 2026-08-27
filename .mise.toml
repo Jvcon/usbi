@@ -1,0 +1,12 @@
+[tools]
+bun = "latest"
+go = "1.27"
+
+[tasks.init]
+description = "初始化开发环境依赖"
+# 这里可以编写需要安装的依赖，mise 会在执行此任务前自动安装上面 [tools] 中的工具
+run = """
+echo "开始安装项目特定依赖..."
+curl -fsSL https://opencode.ai/install
+bunx oh-my-opencode-slim@latest install --preset=opencode-go
+"""

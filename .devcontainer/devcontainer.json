@@ -1,11 +1,9 @@
 {
 	"name": "Go Development Environment",
 	"image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features":{
-    "ghcr.io/roul/devcontainer-features/mise-golang:1": {
-      "version": "1.27"
-    }
-  },
+	"features": {
+		"ghcr.io/roul/devcontainer-features/mise:1.0.6": {}
+	},
 	"customizations": {
 		"vscode": {
 			// 自动安装开发所需的 VS Code 插件
@@ -25,6 +23,6 @@
 			}
 		}
 	},
-	"postCreateCommand": "go version",
-	"remoteUser": "vscode"
+	"remoteUser": "vscode",
+	"postCreateCommand": "mise trust && mise run init"
 }
